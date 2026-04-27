@@ -3,14 +3,14 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
 
-from review_processing import load_reviews, cluster_reviews
+from review_processing import load_reviews, process_reviews
 from summary_formatter import format_all_summaries
 from sentence_retrieval import retrieve_relevant_sentences
 from chart_utils import show_aspect_distribution, show_sentiment_trends
 
 selected_file = ""
-loaded_reviews = []
-latest_clusters = {}
+loaded_reviews = []      # list of dicts: {text, asin, reviewer, date, rating, summary}
+latest_clusters = {}     # {aspect -> [review_dict, ...]}
 
 
 # -----------------------------
@@ -22,7 +22,6 @@ def browse_file():
         title="Select JSONL File",
         filetypes=[("JSONL files", "*.jsonl"), ("All files", "*.*")]
     )
-
     if file_path:
         selected_file = file_path
         file_label.config(text=file_path)
@@ -50,9 +49,8 @@ def analyze_reviews():
     root.update()
 
     loaded_reviews = load_reviews(selected_file, max_reviews)
-    reviews = loaded_reviews
 
-    analysis_box.insert(tk.END, f"Total reviews loaded: {len(reviews)}\n\n")
+    analysis_box.insert(tk.END, f"Total reviews loaded: {len(loaded_reviews)}\n\n")
     analysis_box.see(tk.END)
     root.update()
 
@@ -60,7 +58,7 @@ def analyze_reviews():
     analysis_box.see(tk.END)
     root.update()
 
-    latest_clusters = cluster_reviews(reviews)
+    latest_clusters, _ = process_reviews(loaded_reviews, num_clusters=8)
 
     analysis_box.insert(tk.END, "Generating structured summaries...\n\n")
     analysis_box.see(tk.END)
@@ -73,7 +71,10 @@ def analyze_reviews():
     analysis_box.insert(tk.END, "=" * 60 + "\n\n")
 
     for aspect, summary in summaries.items():
-        analysis_box.insert(tk.END, f"📌 {aspect.capitalize()} ({len(latest_clusters[aspect])} reviews)\n")
+        count = len(latest_clusters[aspect])
+        # Use plain ASCII marker instead of emoji (avoids Tkinter font encoding issues)
+        analysis_box.insert(tk.END, f"[*] {aspect.upper()} ({count} reviews)\n")
+        analysis_box.insert(tk.END, "-" * 50 + "\n")
         analysis_box.insert(tk.END, summary + "\n\n")
 
     analysis_box.see(tk.END)
@@ -107,8 +108,11 @@ def search_reviews():
     search_box.insert(tk.END, "=" * 60 + "\n\n")
 
     for i, item in enumerate(results, start=1):
-        search_box.insert(tk.END, f"🔹 Result {i} (Similarity: {item['score']:.4f})\n")
-        search_box.insert(tk.END, item["sentence"] + "\n\n")
+        search_box.insert(tk.END, f"[{i}] Score: {item['score']:.4f}\n")
+        search_box.insert(tk.END, f"    {item['sentence']}\n")
+        if item.get("source"):
+            search_box.insert(tk.END, f"    Source: {item['source']}\n")
+        search_box.insert(tk.END, "\n")
 
     search_box.see(tk.END)
 
@@ -118,22 +122,23 @@ def search_reviews():
 # -----------------------------
 def open_aspect_chart():
     global latest_clusters
-
     if not latest_clusters:
         messagebox.showerror("Error", "Please analyze reviews first.")
         return
-
-    show_aspect_distribution(latest_clusters)
+    # chart_utils expects {aspect: [texts]} - pass list of texts
+    text_clusters = {k: [r["text"] if isinstance(r, dict) else r for r in v]
+                     for k, v in latest_clusters.items()}
+    show_aspect_distribution(text_clusters)
 
 
 def open_sentiment_chart():
     global latest_clusters
-
     if not latest_clusters:
         messagebox.showerror("Error", "Please analyze reviews first.")
         return
-
-    show_sentiment_trends(latest_clusters)
+    text_clusters = {k: [r["text"] if isinstance(r, dict) else r for r in v]
+                     for k, v in latest_clusters.items()}
+    show_sentiment_trends(text_clusters)
 
 
 # -----------------------------
@@ -141,16 +146,13 @@ def open_sentiment_chart():
 # -----------------------------
 def export_analysis():
     content = analysis_box.get(1.0, tk.END).strip()
-
     if not content:
         messagebox.showerror("Error", "No analysis output to export.")
         return
-
     file_path = filedialog.asksaveasfilename(
         defaultextension=".txt",
         filetypes=[("Text Files", "*.txt")]
     )
-
     if file_path:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -159,16 +161,13 @@ def export_analysis():
 
 def export_search():
     content = search_box.get(1.0, tk.END).strip()
-
     if not content:
         messagebox.showerror("Error", "No search output to export.")
         return
-
     file_path = filedialog.asksaveasfilename(
         defaultextension=".txt",
         filetypes=[("Text Files", "*.txt")]
     )
-
     if file_path:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -194,8 +193,7 @@ root.title("Software Review Intelligence Dashboard")
 root.geometry("1350x850")
 root.configure(bg="#f4f6f8")
 
-# Make resizing better
-root.rowconfigure(4, weight=1)
+root.rowconfigure(3, weight=1)
 root.columnconfigure(0, weight=1)
 
 # -----------------------------
@@ -219,7 +217,6 @@ subtitle_label = tk.Label(
 )
 subtitle_label.grid(row=1, column=0, pady=(0, 15), sticky="n")
 
-
 # -----------------------------
 # TOP CONTROL CONTAINER
 # -----------------------------
@@ -227,251 +224,120 @@ top_container = tk.Frame(root, bg="#f4f6f8")
 top_container.grid(row=2, column=0, sticky="ew", padx=20)
 top_container.columnconfigure(0, weight=1)
 
-# -----------------------------
 # FILE SECTION
-# -----------------------------
 section1 = tk.LabelFrame(
     top_container,
     text=" Step 1: Load Review Dataset ",
     font=("Arial", 11, "bold"),
-    padx=10,
-    pady=10,
-    bg="#ffffff",
-    fg="#1f2d3d"
+    padx=10, pady=10,
+    bg="#ffffff", fg="#1f2d3d"
 )
 section1.grid(row=0, column=0, sticky="ew", pady=6)
 section1.columnconfigure(1, weight=1)
 
 browse_button = tk.Button(
-    section1,
-    text="Choose JSONL File",
-    command=browse_file,
-    width=20,
-    bg="#4f81bd",
-    fg="white",
-    font=("Arial", 10, "bold"),
-    relief="flat"
+    section1, text="Choose JSONL File", command=browse_file,
+    width=20, bg="#4f81bd", fg="white",
+    font=("Arial", 10, "bold"), relief="flat"
 )
 browse_button.grid(row=0, column=0, padx=10, pady=5)
 
 file_label = tk.Label(
-    section1,
-    text="No file selected",
-    wraplength=900,
-    anchor="w",
-    justify="left",
-    bg="#ffffff",
-    fg="#333333",
-    font=("Arial", 10)
+    section1, text="No file selected",
+    wraplength=900, anchor="w", justify="left",
+    bg="#ffffff", fg="#333333", font=("Arial", 10)
 )
 file_label.grid(row=0, column=1, padx=10, pady=5, sticky="w")
 
-
-# -----------------------------
 # ANALYSIS SECTION
-# -----------------------------
 section2 = tk.LabelFrame(
     top_container,
     text=" Step 2: Analyze Reviews ",
     font=("Arial", 11, "bold"),
-    padx=10,
-    pady=10,
-    bg="#ffffff",
-    fg="#1f2d3d"
+    padx=10, pady=10,
+    bg="#ffffff", fg="#1f2d3d"
 )
 section2.grid(row=1, column=0, sticky="ew", pady=6)
 
-tk.Label(
-    section2,
-    text="Max Reviews to Load:",
-    bg="#ffffff",
-    font=("Arial", 10)
-).grid(row=0, column=0, padx=10, pady=5)
+tk.Label(section2, text="Max Reviews to Load:", bg="#ffffff",
+         font=("Arial", 10)).grid(row=0, column=0, padx=10, pady=5)
 
 review_limit_entry = tk.Entry(section2, width=10, font=("Arial", 10))
 review_limit_entry.insert(0, "2000")
 review_limit_entry.grid(row=0, column=1, padx=10, pady=5)
 
-analyze_button = tk.Button(
-    section2,
-    text="Analyze Reviews",
-    command=analyze_reviews,
-    bg="#5cb85c",
-    fg="white",
-    width=16,
-    font=("Arial", 10, "bold"),
-    relief="flat"
-)
-analyze_button.grid(row=0, column=2, padx=8, pady=5)
+for col, (label, cmd, color, w) in enumerate([
+    ("Analyze Reviews", analyze_reviews,   "#5cb85c", 16),
+    ("Aspect Chart",    open_aspect_chart, "#337ab7", 13),
+    ("Trend Chart",     open_sentiment_chart, "#8e44ad", 13),
+    ("Export Analysis", export_analysis,   "#16a085", 13),
+    ("Clear Analysis",  clear_analysis,    "#999999", 13),
+], start=2):
+    tk.Button(section2, text=label, command=cmd, bg=color, fg="white",
+              width=w, font=("Arial", 10, "bold"), relief="flat"
+              ).grid(row=0, column=col, padx=8, pady=5)
 
-chart_button = tk.Button(
-    section2,
-    text="Aspect Chart",
-    command=open_aspect_chart,
-    bg="#337ab7",
-    fg="white",
-    width=13,
-    font=("Arial", 10, "bold"),
-    relief="flat"
-)
-chart_button.grid(row=0, column=3, padx=8, pady=5)
-
-trend_button = tk.Button(
-    section2,
-    text="Trend Chart",
-    command=open_sentiment_chart,
-    bg="#8e44ad",
-    fg="white",
-    width=13,
-    font=("Arial", 10, "bold"),
-    relief="flat"
-)
-trend_button.grid(row=0, column=4, padx=8, pady=5)
-
-export_analysis_button = tk.Button(
-    section2,
-    text="Export Analysis",
-    command=export_analysis,
-    bg="#16a085",
-    fg="white",
-    width=13,
-    font=("Arial", 10, "bold"),
-    relief="flat"
-)
-export_analysis_button.grid(row=0, column=5, padx=8, pady=5)
-
-clear_analysis_button = tk.Button(
-    section2,
-    text="Clear Analysis",
-    command=clear_analysis,
-    bg="#999999",
-    fg="white",
-    width=13,
-    font=("Arial", 10, "bold"),
-    relief="flat"
-)
-clear_analysis_button.grid(row=0, column=6, padx=8, pady=5)
-
-
-# -----------------------------
 # SEARCH SECTION
-# -----------------------------
 section3 = tk.LabelFrame(
     top_container,
     text=" Step 3: Search Reviews by User Query ",
     font=("Arial", 11, "bold"),
-    padx=10,
-    pady=10,
-    bg="#ffffff",
-    fg="#1f2d3d"
+    padx=10, pady=10,
+    bg="#ffffff", fg="#1f2d3d"
 )
 section3.grid(row=2, column=0, sticky="ew", pady=6)
 
-tk.Label(
-    section3,
-    text="Search Query:",
-    bg="#ffffff",
-    font=("Arial", 10)
-).grid(row=0, column=0, padx=10, pady=5)
+tk.Label(section3, text="Search Query:", bg="#ffffff",
+         font=("Arial", 10)).grid(row=0, column=0, padx=10, pady=5)
 
 query_entry = tk.Entry(section3, width=50, font=("Arial", 10))
 query_entry.grid(row=0, column=1, padx=10, pady=5)
 
-search_button = tk.Button(
-    section3,
-    text="Search Reviews",
-    command=search_reviews,
-    bg="#f0ad4e",
-    fg="white",
-    width=16,
-    font=("Arial", 10, "bold"),
-    relief="flat"
-)
-search_button.grid(row=0, column=2, padx=8, pady=5)
-
-export_search_button = tk.Button(
-    section3,
-    text="Export Search",
-    command=export_search,
-    bg="#16a085",
-    fg="white",
-    width=13,
-    font=("Arial", 10, "bold"),
-    relief="flat"
-)
-export_search_button.grid(row=0, column=3, padx=8, pady=5)
-
-clear_search_button = tk.Button(
-    section3,
-    text="Clear Search",
-    command=clear_search,
-    bg="#d9534f",
-    fg="white",
-    width=13,
-    font=("Arial", 10, "bold"),
-    relief="flat"
-)
-clear_search_button.grid(row=0, column=4, padx=8, pady=5)
-
+for col, (label, cmd, color, w) in enumerate([
+    ("Search Reviews", search_reviews, "#f0ad4e", 16),
+    ("Export Search",  export_search,  "#16a085", 13),
+    ("Clear Search",   clear_search,   "#d9534f", 13),
+], start=2):
+    tk.Button(section3, text=label, command=cmd, bg=color, fg="white",
+              width=w, font=("Arial", 10, "bold"), relief="flat"
+              ).grid(row=0, column=col, padx=8, pady=5)
 
 # -----------------------------
-# BOTTOM PANELS (SIDE BY SIDE)
+# BOTTOM PANELS
 # -----------------------------
 bottom_container = tk.Frame(root, bg="#f4f6f8")
-bottom_container.grid(row=4, column=0, sticky="nsew", padx=20, pady=(10, 15))
+bottom_container.grid(row=3, column=0, sticky="nsew", padx=20, pady=(10, 15))
 bottom_container.columnconfigure(0, weight=1)
 bottom_container.columnconfigure(1, weight=1)
 bottom_container.rowconfigure(0, weight=1)
 
-# -----------------------------
-# ANALYSIS OUTPUT
-# -----------------------------
 analysis_frame = tk.LabelFrame(
-    bottom_container,
-    text=" Analysis Results ",
-    font=("Arial", 11, "bold"),
-    padx=10,
-    pady=10,
-    bg="#ffffff",
-    fg="#1f2d3d"
+    bottom_container, text=" Analysis Results ",
+    font=("Arial", 11, "bold"), padx=10, pady=10,
+    bg="#ffffff", fg="#1f2d3d"
 )
 analysis_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
 analysis_box = scrolledtext.ScrolledText(
-    analysis_frame,
-    wrap=tk.WORD,
-    font=("Consolas", 11),
-    bg="#fcfcfc",
-    fg="#222222",
-    insertbackground="black",
-    relief="flat",
-    borderwidth=1
+    analysis_frame, wrap=tk.WORD,
+    font=("Courier", 10),        # Courier: safe monospace, no emoji issues
+    bg="#fcfcfc", fg="#222222",
+    insertbackground="black", relief="flat", borderwidth=1
 )
 analysis_box.pack(fill="both", expand=True)
 
-# -----------------------------
-# SEARCH OUTPUT
-# -----------------------------
 search_frame = tk.LabelFrame(
-    bottom_container,
-    text=" Search Results ",
-    font=("Arial", 11, "bold"),
-    padx=10,
-    pady=10,
-    bg="#ffffff",
-    fg="#1f2d3d"
+    bottom_container, text=" Search Results ",
+    font=("Arial", 11, "bold"), padx=10, pady=10,
+    bg="#ffffff", fg="#1f2d3d"
 )
 search_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
 
 search_box = scrolledtext.ScrolledText(
-    search_frame,
-    wrap=tk.WORD,
-    font=("Consolas", 11),
-    bg="#fcfcfc",
-    fg="#222222",
-    insertbackground="black",
-    relief="flat",
-    borderwidth=1
+    search_frame, wrap=tk.WORD,
+    font=("Courier", 10),
+    bg="#fcfcfc", fg="#222222",
+    insertbackground="black", relief="flat", borderwidth=1
 )
 search_box.pack(fill="both", expand=True)
 

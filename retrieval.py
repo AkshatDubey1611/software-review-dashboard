@@ -3,7 +3,7 @@
 import torch
 from sentence_transformers import SentenceTransformer, util
 from query_understanding import detect_query_aspects
-from review_processing import cluster_reviews
+from review_processing import cluster_reviews   # now properly defined
 
 # Lazy-load model
 embedding_model = None

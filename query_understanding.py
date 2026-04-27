@@ -1,7 +1,7 @@
 # query_understanding.py
 
 from sentence_transformers import SentenceTransformer, util
-from review_processing import ASPECT_DESCRIPTIONS
+from review_processing import ASPECT_DESCRIPTIONS   # now properly defined
 
 # Lazy-load model
 embedding_model = None
