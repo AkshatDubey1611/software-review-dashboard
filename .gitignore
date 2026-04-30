@@ -1,0 +1,17 @@
+venv/
+venv311/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.jsonl
+runs/
+venv/
+venv311/
+*.safetensors
+__pycache__/
+*.pkl
+*.pt
+*.bin
+.vscode/
+.idea/
